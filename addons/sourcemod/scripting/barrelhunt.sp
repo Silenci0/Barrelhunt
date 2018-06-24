@@ -2,8 +2,8 @@
 *************************************************************************
 [ZPS] Barrelhunt
 Description:
-	Initiates the Barrelhunt gamemode on select maps in ZPS with 'barrelhunt'
-    or 'bhm' naming conventions in the map. The classic gamemode basically 
+	Initiates the Barrelhunt gamemode on select maps in ZPS with 'barrelhunt',
+    'bhs', or 'bhm' naming conventions in the map. The classic gamemode basically 
     transforms all zombies into barrels! Hide amongst the other barrels in 
     the map and go munching on unsuspecting survivors!
 *************************************************************************
@@ -30,11 +30,29 @@ along with this plugin.  If not, see <http://www.gnu.org/licenses/>.
 
 #define TEAM_SURVIVORS  2
 #define TEAM_UNDEAD     3
-#define PLUGIN_VERSION "2.0"
-#define BARREL_MODEL "models/props_c17/oildrum001.mdl"
+#define PLUGIN_VERSION "2.5"
 
 new String:g_sBHMap[PLATFORM_MAX_PATH];
 new bool:g_bBarrelHunt = false;
+new Handle:g_BHTimerHandle[MAXPLAYERS+1];
+new Handle:g_hDblBarrelMode = INVALID_HANDLE;
+//new Handle:g_hSurvivorBarrelMode = INVALID_HANDLE; // New feature to come later!
+
+// Barrel model and associated assets
+// NOTE: The files from props_c17 all belong to HL2 and are not native to ZPS,
+// despite being an HL2 mod. This means we have to have users download the files 
+// into models directory client side as well as have them server side.
+new const String:g_aBarrelAssets[7][PLATFORM_MAX_PATH] =
+{
+    "models/props_c17/oildrum001.mdl",
+    "models/props_c17/oildrum001.jpg",
+    "models/props_c17/oildrum001.dx80.vtx",
+    "models/props_c17/oildrum001.dx90.vtx",
+    "models/props_c17/oildrum001.phy",
+    "models/props_c17/oildrum001.sw.vtx",
+    "models/props_c17/oildrum001.vvd"
+};
+
 
 public Plugin:myinfo = {
     name = "[ZPS] Barrelhunt",
@@ -44,15 +62,33 @@ public Plugin:myinfo = {
     url = "http://forums.alliedmods.net"
 };
 
+public OnPluginStart()
+{
+    CreateConVar("sm_barrelhunt_version", PLUGIN_VERSION, "[ZPS] Barrelhunt Version", FCVAR_SPONLY|FCVAR_REPLICATED|FCVAR_NOTIFY);
+    g_hDblBarrelMode = CreateConVar("sm_doublebarrel_mode", "0", "Turns both Zombies and Survivors into barrels.", FCVAR_NOTIFY|FCVAR_REPLICATED);
+    //g_hSurvivorBarrelMode = CreateConVar("sm_survivorbarrel_mode", "0", "Turns only Survivors into barrels.", FCVAR_NOTIFY|FCVAR_REPLICATED);
+}
+
+public OnClientDisconnect(client)
+{
+    g_BHTimerHandle[client] = INVALID_HANDLE;
+}
+
 public OnMapStart()
 {
     // Is the map we are on actually barrelhunt?
     GetCurrentMap(g_sBHMap, sizeof(g_sBHMap));
-    if(StrContains(g_sBHMap, "barrelhunt", false) > -1 || StrContains(g_sBHMap, "bhm", false) > -1)
+    if(StrContains(g_sBHMap, "barrelhunt", false) > -1 || StrContains(g_sBHMap, "bhm", false) > -1 || StrContains(g_sBHMap, "bhs", false) > -1)
     {
         g_bBarrelHunt  = true;
     }
 
+    // Make sure our timer handles are invalid. Wouldn't want garbage in them.
+    for(new i = 1; i <= MaxClients; i++)
+    {
+        g_BHTimerHandle[i] = INVALID_HANDLE;
+    }
+    
     // If the map is a barrelhunt map...
     if (g_bBarrelHunt  == true)
     {    
@@ -61,19 +97,13 @@ public OnMapStart()
         HookEvent("player_team", BH_SpawnHandler, EventHookMode_Post);
 
         // Precache our model
-        PrecacheModel(BARREL_MODEL);
+        PrecacheModel(g_aBarrelAssets[0]);
         
         // Add the barrel files to be downloaded by the client
-        // NOTE: The files from props_c17 all belong to HL2 and are not native to ZPS,
-        // despite being an HL2 mod. This means we have to have users download the files 
-        // into models directory client side as well as have them server side.
-        AddFileToDownloadsTable(BARREL_MODEL);
-        AddFileToDownloadsTable("models/props_c17/oildrum001.jpg");
-        AddFileToDownloadsTable("models/props_c17/oildrum001.dx80.vtx");
-        AddFileToDownloadsTable("models/props_c17/oildrum001.dx90.vtx");
-        AddFileToDownloadsTable("models/props_c17/oildrum001.phy");
-        AddFileToDownloadsTable("models/props_c17/oildrum001.sw.vtx"); 
-        AddFileToDownloadsTable("models/props_c17/oildrum001.vvd");
+        for (int i = 0; i < sizeof(g_aBarrelAssets); i++)
+        {
+            AddFileToDownloadsTable(g_aBarrelAssets[i]);
+        }
     }
 }
 
@@ -87,12 +117,24 @@ public OnMapEnd()
 
 public BH_SpawnHandler(Handle:event, const String:name[], bool:dontBroadcast)
 {
-    // Grab our player, find out if they are a zombie, and 
+    // Grab our player's userid, find out if they are a zombie, and 
     // create a timer that sets the player's entity model to a barrel
     new client = GetClientOfUserId(GetEventInt(event, "userid"));
-    if (GetClientTeam(client) == TEAM_UNDEAD)
+    
+    // Check if our player isn't client 0
+    if (client > 0)
     {
-        CreateTimer(1.0, BH_SetModel, client);
+        // If we are using default barrel hunt, just look for undead players to transform into barrels
+        if (GetClientTeam(client) == TEAM_UNDEAD && !GetConVarBool(g_hDblBarrelMode))
+        {
+            g_BHTimerHandle[client] = CreateTimer(1.0, BH_SetModel, client);
+        }
+        
+        // If Double Barrel Mode is active, both should become barrels! 
+        if (GetConVarBool(g_hDblBarrelMode))
+        {
+            g_BHTimerHandle[client] = CreateTimer(1.0, BH_SetModel, client);
+        }
     }
 }
 
@@ -100,5 +142,22 @@ public Action:BH_SetModel(Handle:timer, any:client)
 {
     // Sets the player's model to a barrel
     // NOTE: You must precache this model or it will not set!
-    SetEntityModel(client,BARREL_MODEL);
+    if (!IsPlayerValid(client))
+    {
+        return Plugin_Continue;
+    }
+    
+    SetEntityModel(client,g_aBarrelAssets[0]);
+    return Plugin_Continue;
+}
+
+stock bool:IsPlayerValid(client)
+{
+    // Are they connected, in game, and alive?
+    if (IsClientInGame(client) && IsClientConnected(client) && IsPlayerAlive(client))
+    {
+        return true;
+    }
+    
+    return false;
 }
